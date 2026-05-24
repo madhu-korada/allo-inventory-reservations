@@ -39,6 +39,7 @@ npm run dev
 ```
 
 Set `DATABASE_URL` in `.env` before running the Prisma commands.
+For Supabase + Prisma, also set `DIRECT_URL`; Prisma uses it for migrations while the app uses the pooled `DATABASE_URL`.
 Set `CRON_SECRET` in production if you deploy the Vercel Cron endpoint.
 
 The app runs at [http://localhost:3000](http://localhost:3000).
