@@ -76,7 +76,7 @@ The confirm path still needs the expiry check because cron can be delayed.
 
 - Idempotency is implemented for reserve and confirm retries. Simultaneous in-flight requests with the same key are rejected with `409 IDEMPOTENCY_REQUEST_IN_PROGRESS`; a production version could block briefly and replay once the first request finishes.
 - The UI is intentionally operational rather than decorative: product stock, reservation state, visible `409` and `410` errors, and no manual refresh after mutations.
-- The test suite focuses on reservation behavior and the atomic SQL guard. With more time, I would add PostgreSQL integration tests that fire concurrent HTTP requests against a real test database.
+- The test suite focuses on reservation behavior, idempotency replay, and the atomic SQL guard. With more time, I would add PostgreSQL integration tests that fire concurrent HTTP requests against a real test database.
 
 ## Verification
 
