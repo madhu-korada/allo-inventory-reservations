@@ -39,6 +39,7 @@ npm run dev
 ```
 
 Set `DATABASE_URL` in `.env` before running the Prisma commands.
+Set `CRON_SECRET` in production if you deploy the Vercel Cron endpoint.
 
 The app runs at [http://localhost:3000](http://localhost:3000).
 
@@ -52,6 +53,7 @@ The app runs at [http://localhost:3000](http://localhost:3000).
 | `GET` | `/api/reservations/:id` | Returns reservation details for the checkout panel. |
 | `POST` | `/api/reservations/:id/confirm` | Confirms payment. Returns `410` if the reservation expired. |
 | `POST` | `/api/reservations/:id/release` | Releases a pending reservation early. |
+| `GET` | `/api/cron/release-expired` | Vercel Cron endpoint that releases expired pending reservations. Requires `Authorization: Bearer $CRON_SECRET`. |
 
 `POST /api/reservations` and `POST /api/reservations/:id/confirm` support an optional
 `Idempotency-Key` header. Reusing the same key with the same request body replays the
@@ -60,13 +62,15 @@ original JSON response. Reusing the same key with a different request body retur
 
 ## Expiry Approach
 
-This implementation uses lazy cleanup:
+This implementation uses a Vercel Cron endpoint plus lazy cleanup:
 
+- `vercel.json` schedules `/api/cron/release-expired` once per minute.
+- The cron endpoint requires `Authorization: Bearer $CRON_SECRET`.
 - Product and reservation reads call `cleanupExpired`.
 - Confirming an expired pending reservation releases it in the same transaction and returns `410`.
 - Released reservations decrement `reservedUnits`, making the units available again.
 
-For higher traffic production systems, I would keep the same confirm-time guard and add a scheduled worker or Vercel Cron endpoint that calls the same cleanup operation every minute. The confirm path still needs the expiry check because cron can be delayed.
+The confirm path still needs the expiry check because cron can be delayed.
 
 ## Tradeoffs
 
