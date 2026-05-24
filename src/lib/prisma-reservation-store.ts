@@ -1,6 +1,5 @@
 import { Prisma, type PrismaClient } from "@prisma/client";
 import {
-  reserveStockSql,
   type ConfirmResult,
   type ReservationRecord,
   type ReservationStore,
@@ -85,160 +84,148 @@ export function createPrismaReservationStore(
 ): ReservationStore {
   return {
     async createPendingReservation(input) {
-      return prisma.$transaction(
-        async (tx) => {
-          const updatedStock = await tx.$queryRawUnsafe<StockRow[]>(
-            reserveStockSql,
-            input.productId,
-            input.warehouseId,
-            input.quantity,
-          );
+      return prisma.$transaction(async (tx) => {
+        const updatedStock = await tx.$queryRaw<StockRow[]>(Prisma.sql`
+          UPDATE "StockLevel"
+          SET "reservedUnits" = "reservedUnits" + ${input.quantity},
+              "updatedAt" = NOW()
+          WHERE "productId" = ${input.productId}
+            AND "warehouseId" = ${input.warehouseId}
+            AND ("totalUnits" - "reservedUnits") >= ${input.quantity}
+          RETURNING "id";
+        `);
 
-          if (updatedStock.length === 0) {
-            return null;
-          }
+        if (updatedStock.length === 0) {
+          return null;
+        }
 
-          const reservation = await tx.reservation.create({
-            data: {
-              productId: input.productId,
-              warehouseId: input.warehouseId,
-              quantity: input.quantity,
-              status: "PENDING",
-              expiresAt: input.expiresAt,
-            },
-          });
+        const reservation = await tx.reservation.create({
+          data: {
+            productId: input.productId,
+            warehouseId: input.warehouseId,
+            quantity: input.quantity,
+            status: "PENDING",
+            expiresAt: input.expiresAt,
+          },
+        });
 
-          return toReservationRecord(reservation);
-        },
-        {
-          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        },
-      );
+        return toReservationRecord(reservation);
+      });
     },
 
     async confirmReservation(id, now): Promise<ConfirmResult> {
-      return prisma.$transaction(
-        async (tx) => {
-          const reservation = await tx.reservation.findUnique({
+      return prisma.$transaction(async (tx) => {
+        const reservation = await tx.reservation.findUnique({
+          where: { id },
+        });
+
+        if (!reservation) {
+          return { kind: "not-found" };
+        }
+
+        const snapshot = toReservationRecord(reservation);
+
+        if (reservation.status === "CONFIRMED") {
+          return { kind: "confirmed", reservation: snapshot };
+        }
+
+        if (reservation.status === "RELEASED" && reservation.expiresAt <= now) {
+          return { kind: "expired" };
+        }
+
+        if (reservation.status === "RELEASED") {
+          return { kind: "released", reservation: snapshot };
+        }
+
+        if (reservation.expiresAt <= now) {
+          await releasePendingInTransaction(tx, reservation, now);
+          return { kind: "expired" };
+        }
+
+        const confirmAttempt = await tx.reservation.updateMany({
+          where: {
+            id,
+            status: "PENDING",
+            expiresAt: {
+              gt: now,
+            },
+          },
+          data: {
+            status: "CONFIRMED",
+            confirmedAt: now,
+          },
+        });
+
+        if (confirmAttempt.count === 0) {
+          const current = await tx.reservation.findUniqueOrThrow({
             where: { id },
           });
 
-          if (!reservation) {
-            return { kind: "not-found" };
+          if (current.status === "CONFIRMED") {
+            return {
+              kind: "confirmed",
+              reservation: toReservationRecord(current),
+            };
           }
 
-          const snapshot = toReservationRecord(reservation);
-
-          if (reservation.status === "CONFIRMED") {
-            return { kind: "confirmed", reservation: snapshot };
+          if (current.status === "RELEASED" && current.expiresAt > now) {
+            return {
+              kind: "released",
+              reservation: toReservationRecord(current),
+            };
           }
 
-          if (reservation.status === "RELEASED" && reservation.expiresAt <= now) {
+          if (current.status === "RELEASED" || current.expiresAt <= now) {
             return { kind: "expired" };
           }
 
-          if (reservation.status === "RELEASED") {
-            return { kind: "released", reservation: snapshot };
-          }
+          return { kind: "not-found" };
+        }
 
-          if (reservation.expiresAt <= now) {
-            await releasePendingInTransaction(tx, reservation, now);
-            return { kind: "expired" };
-          }
-
-          const confirmAttempt = await tx.reservation.updateMany({
-            where: {
-              id,
-              status: "PENDING",
-              expiresAt: {
-                gt: now,
-              },
+        await tx.stockLevel.update({
+          where: {
+            productId_warehouseId: {
+              productId: reservation.productId,
+              warehouseId: reservation.warehouseId,
             },
-            data: {
-              status: "CONFIRMED",
-              confirmedAt: now,
+          },
+          data: {
+            totalUnits: {
+              decrement: reservation.quantity,
             },
-          });
-
-          if (confirmAttempt.count === 0) {
-            const current = await tx.reservation.findUniqueOrThrow({
-              where: { id },
-            });
-
-            if (current.status === "CONFIRMED") {
-              return {
-                kind: "confirmed",
-                reservation: toReservationRecord(current),
-              };
-            }
-
-            if (current.status === "RELEASED" && current.expiresAt > now) {
-              return {
-                kind: "released",
-                reservation: toReservationRecord(current),
-              };
-            }
-
-            if (current.status === "RELEASED" || current.expiresAt <= now) {
-              return { kind: "expired" };
-            }
-
-            return { kind: "not-found" };
-          }
-
-          await tx.stockLevel.update({
-            where: {
-              productId_warehouseId: {
-                productId: reservation.productId,
-                warehouseId: reservation.warehouseId,
-              },
+            reservedUnits: {
+              decrement: reservation.quantity,
             },
-            data: {
-              totalUnits: {
-                decrement: reservation.quantity,
-              },
-              reservedUnits: {
-                decrement: reservation.quantity,
-              },
-            },
-          });
+          },
+        });
 
-          const confirmed = await tx.reservation.findUniqueOrThrow({
-            where: { id },
-          });
+        const confirmed = await tx.reservation.findUniqueOrThrow({
+          where: { id },
+        });
 
-          return {
-            kind: "confirmed",
-            reservation: toReservationRecord(confirmed),
-          };
-        },
-        {
-          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        },
-      );
+        return {
+          kind: "confirmed",
+          reservation: toReservationRecord(confirmed),
+        };
+      });
     },
 
     async releaseReservation(id, now) {
-      return prisma.$transaction(
-        async (tx) => {
-          const reservation = await tx.reservation.findUnique({
-            where: { id },
-          });
+      return prisma.$transaction(async (tx) => {
+        const reservation = await tx.reservation.findUnique({
+          where: { id },
+        });
 
-          if (!reservation) {
-            return null;
-          }
+        if (!reservation) {
+          return null;
+        }
 
-          if (reservation.status !== "PENDING") {
-            return toReservationRecord(reservation);
-          }
+        if (reservation.status !== "PENDING") {
+          return toReservationRecord(reservation);
+        }
 
-          return releasePendingInTransaction(tx, reservation, now);
-        },
-        {
-          isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-        },
-      );
+        return releasePendingInTransaction(tx, reservation, now);
+      });
     },
 
     async cleanupExpired(now) {
