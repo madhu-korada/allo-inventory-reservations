@@ -1,0 +1,83 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  RELEASED
+}
+
+model Product {
+  id           String       @id @default(cuid())
+  sku          String       @unique
+  name         String
+  description  String
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  stockLevels  StockLevel[]
+  reservations Reservation[]
+}
+
+model Warehouse {
+  id           String       @id @default(cuid())
+  code         String       @unique
+  name         String
+  city         String
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  stockLevels  StockLevel[]
+  reservations Reservation[]
+}
+
+model StockLevel {
+  id            String    @id @default(cuid())
+  productId     String
+  warehouseId   String
+  totalUnits    Int
+  reservedUnits Int       @default(0)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  product       Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  warehouse     Warehouse @relation(fields: [warehouseId], references: [id], onDelete: Cascade)
+
+  @@unique([productId, warehouseId])
+  @@index([warehouseId])
+}
+
+model Reservation {
+  id          String            @id @default(cuid())
+  productId   String
+  warehouseId String
+  quantity    Int
+  status      ReservationStatus @default(PENDING)
+  expiresAt   DateTime
+  confirmedAt DateTime?
+  releasedAt  DateTime?
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  product     Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  warehouse   Warehouse         @relation(fields: [warehouseId], references: [id], onDelete: Restrict)
+
+  @@index([status, expiresAt])
+  @@index([productId, warehouseId])
+}
+
+model IdempotencyRecord {
+  id          String   @id @default(cuid())
+  method      String
+  route       String
+  key         String
+  requestHash String
+  statusCode  Int?
+  responseJson Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([method, route, key])
+}
